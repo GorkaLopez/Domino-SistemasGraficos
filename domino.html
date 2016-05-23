@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html>
+	<head> 
+		<meta charset=utf-8> 
+		<title> Dominó </title> 
+		<style> 
+			body { margin: 0; } 
+			canvas { width: 100%; height: 100% } 
+		</style> 
+	</head> 
+
+	<body> 
+		<script type="text/javascript" src="libs/three73.min.js"></script> 
+		
+		<script type="text/javascript" src="libs/physi.js"></script> 
+		
+        <script type="text/javascript" src="libs/dat.gui.js"></script> 
+
+        <!-- La libreria FirstPersonControls utilizada esta editada -->
+        <script type="text/javascript" src="libs/FirstPersonControls.js"></script> 
+
+
+        <script type="text/javascript" src="libs/jquery-1.10.2.min.js"></script> 
+        <script type="text/javascript" src="libs/jquery-ui-1.10.3.min.js"></script> 
+        <link rel="stylesheet" type="text/css" href="libs/jquery-ui.css"></link> 
+
+		<script>
+	
+		    'use strict'; 
+
+		    Physijs.scripts.worker = 'libs/physijs_worker.js';
+		    Physijs.scripts.ammo = 'ammo.js'; 
+			/* Problema  un tanto interesante. 
+			 * Antes tenía tal que así los paths:
+			 * 		Physijs.scripts.worker = '../libs/physijs_worker.js';
+		     * 		Physijs.scripts.ammo = '../libs/ammo.js';
+			 * Pues al mover el HTML a la carpeta superior a libs, da NETWORK ERROR en la consola. 
+			 * Echando un vistazo al código, es porque no consigue importar una de las dos librerías.
+			 * Entonces: 
+			 * 		-El path del worker (que luego cargará el ammo.js) tiene que ser el relativo a ESTE documento desde el que se llama a physi.js
+			 * 		-El path de ammo.js tiene que ser relativo AL WORKER.
+			 *			Antes al ser ../libs hacian de la carpeta "codigo" subir y entrar a libs, o salir y volver a entrar de libs, por eso iba.
+			 */
+
+		    /* Variables de estado */
+		    //estado: define si se está en modo editor o ejecución
+		    var estado = 1; //0 ejecución, 1 editor, cualquier otro valor ejecución
+		    //click: comportamiento del clic en el editor
+		    var click = 0; //0 seleccionar, 1 colocar, 2 ó 3 mover ficha con clic (2 desde seleccionar, 3 desde colocar), cualquier otro valor seleccionar
+		    //continuar: al cambiar al editor se continúa con la ejecución o se detiene y reinicia
+		    var continuar = 0;//0 reiniciar, 1 continuar, cualquier otro valor continuar
+		    var fuerza = 5;
+		    var rotacion = 0;
+		    var tam_crear = 20;
+		    var color = -1; //-1 para generar fichas de color aleatorio, cualquier otro valor será un color concreto. 
+		    /*Cuando se entra al menú de crear piezas, si el color es -1 se establece por defecto el rojo, o el último seleccionado, para crear piezas de color concreto*/
+
+		    //Variables cantidad de fichas y distribución, para 
+		    var fcount = 60;
+		    var dist = 4;
+
+			//Variables THREE.js y Physi.js
+			var renderer;
+			var scene;
+			var camera;
+			
+			//Variables de objetos
+			var plane;
+			var fichas = new Array(), fichas_sinf = new THREE.Object3D(); //grupos de fichas: con físicas y sin ellas.
+			var fichas_temp = new THREE.Object3D(); //grupo para añadir fichas sin físicas cuando se edita sin quitar las que tienen físicas.
+			var texturas = Array();
+			var ficha_editar;
+			var glow_editar, glow_onmove; //"Glows"
+			
+			//Eliminado:
+			var ge_oculto = 0;
+			/*
+			 * se utilizaba para que no se vieran los glows al editar un color, para verlo mejor.
+			 * al no funcionar el color adecuadamente, se ha eliminado la posibilidad,
+			 * pero permanece el código, por si se encuentra una solución.
+			 */
+			
+			//Otras variables
+			var controles_camara, miReloj; //Control de camara
+			var gui, ficha_gui, ficha_menu, guiclick = 0, guimove = 0; //Interfaces dat.gui
+			var _vector = new THREE.Vector3;
+			var abrirInstrucciones;
+
+			/**
+			 * Inicialización Three.js
+		     *
+		     * Inicializa la escena, la camara y las luces
+			 * Se llama cuando se carga la ventana mediante la función window.onload
+		     **/
+			var init = function() {
+
+
+                miReloj = new THREE.Clock();
+				
+				renderer = new THREE.WebGLRenderer({ antialias: true });
+		        renderer.setSize( window.innerWidth, window.innerHeight );
+
+		        scene = new Physijs.Scene;
+				
+        		renderer.setClearColor(new THREE.Color(0xbbbbbb, 1.0));
+        		renderer.shadowMapEnabled = true;
+
+		        camera = new THREE.PerspectiveCamera(
+		            35,
+		            window.innerWidth / window.innerHeight,
+		            1,
+		            2000
+		        );
+		        camera.position.set( 800, 400, 0 );
+				
+                // Controles First Person                
+                controles_camara = new THREE.FirstPersonControls(camera);
+                controles_camara.lookSpeed = 0.08;
+                controles_camara.movementSpeed = 150;
+                controles_camara.noFly = true;
+                controles_camara.lookVertical = true;
+                controles_camara.autoForward = false;
+                controles_camara.constrainVertical = false;
+                controles_camara.verticalMin = 1.0;
+                controles_camara.verticalMax = 2.0;
+				//longitud y latitud necesarias para que apunte a (0,0,0)
+                controles_camara.lon = 180;
+                controles_camara.lat = -30;
+                controles_camara.activeLook = false; //no se mueve la cámara con el ratón
+				
+
+                camera.lookAt( scene.position );
+		        scene.add( camera );
+				
+				var loader = new THREE.TextureLoader();
+				var table_material = Physijs.createMaterial(
+					new THREE.MeshLambertMaterial({ map: loader.load( 'texturas/wood.jpg' )}),
+					.9, // high friction
+					.2 // low restitution
+				);
+				table_material.map.wrapS = table_material.map.wrapT = THREE.RepeatWrapping;
+				table_material.map.repeat.set( 5, 5 );
+				
+				plane = new Physijs.BoxMesh(
+					new THREE.PlaneGeometry(1000, 1000, 20, 20),
+					table_material,
+					0, // mass
+					{ restitution: .2, friction: .8 }
+				);
+				plane.receiveShadow = true;
+        		plane.rotation.x = -0.5 * Math.PI;
+        		plane.position.x =  0;
+        		plane.position.y = 0;
+        		plane.position.z = 0;
+				scene.add( plane );
+				
+				for(var i=1; i<=24; i++)
+					texturas.push(loader.load( 'texturas/f'+i+'.jpg' ));
+
+				crearFichas();
+
+
+		        // EL FOCO
+		        var foco = new THREE.SpotLight(0xffffff);
+				foco.position.set(400, 1200, 200);
+		        foco.castShadow = true;
+		        scene.add(foco);
+		        
+				// LUZ AMBIENTAL
+				var luzAmbiental = new THREE.AmbientLight(0x2c2c2c );
+        		scene.add(luzAmbiental);
+				
+				addControlGui();
+	
+				//FUENTE de shader-glow: https://stemkoski.github.io/Three.js/Shader-Glow.html		
+				var glowMaterial = new THREE.ShaderMaterial( 
+				{
+					uniforms: 
+					{ 
+						"c":   { type: "f", value: 1.0 },
+						"p":   { type: "f", value: 0.9 },
+						glowColor: { type: "c", value: new THREE.Color(0x2266bb) },
+						viewVector: { type: "v3", value: camera.position }
+					},
+					vertexShader:   document.getElementById( 'vertexShader'   ).textContent,
+					fragmentShader: document.getElementById( 'fragmentShader' ).textContent,
+					side: THREE.FrontSide,
+					blending: THREE.AdditiveBlending,
+					transparent: true
+				}   );
+							
+				var glow_tam = 20;
+				glow_onmove = new THREE.Mesh( 
+					new THREE.BoxGeometry(.3*glow_tam, .6*glow_tam, glow_tam/10),
+					glowMaterial.clone() 
+				);
+				glow_onmove.position.x = 0;
+				glow_onmove.position.y = .3*glow_tam;
+				glow_onmove.position.z = 0;
+				glow_onmove.tam_ficha = glow_tam;
+				glow_onmove.scale.multiplyScalar(1.2);
+				
+				glow_editar = new THREE.Mesh( 
+					new THREE.BoxGeometry(.3*glow_tam, .6*glow_tam, glow_tam/10), 
+					glowMaterial.clone() 
+				);
+				glow_editar.material.uniforms.glowColor.value = new THREE.Color(0x22aa22);
+				glow_editar.position.x = 0;
+				glow_editar.position.y = 3*glow_tam;
+				glow_editar.position.z = 0;
+				glow_editar.tam_ficha = glow_tam;
+				glow_editar.scale.multiplyScalar(1.2);			
+					
+				document.body.appendChild(renderer.domElement);
+				
+				scene.add(fichas_sinf);
+				
+		        requestAnimationFrame( render );
+			}
+
+	      	/**
+			 * Función para visualizar la escena
+			 * El intervalo viene dado por requestAnimationFrame
+			 **/
+			var render = function() {
+			
+                var delta = miReloj.getDelta();				
+                controles_camara.update(delta);
+				scene.simulate(); // run physics
+		        renderer.render( scene, camera); // render the scene
+		        requestAnimationFrame( render );
+						
+			}
+
+			/*
+			 Crea las fichas con distintas distribuciones, para testear:
+			 	1: triangulo, 2: curva, 3: triangulo con rotación, 4: circunferencia
+			 	cualquier otro valor: vacio
+			*/
+			var crearFichas = function(){
+				var t = tam_crear/10;
+				var n = fcount;					
+				switch(dist){
+					case 1:
+						var i= 0, j=0;
+						while(j<n){
+					        var lat = (i*((t*1.5)+0.5));
+					        for(var z=0;z<=i;z++){
+						        ficha_mesh(lat,i*4*t-100,0,tam_crear);
+						        lat -= (3*t)+0.5;
+						        j++;
+					    	}
+					    	i++;
+						}
+						break;
+					case 2:
+						var i= 0, j=0;
+						while(j<n){
+					        var lat = (i*((t*1.5)+0.5));
+					        for(var z=0;z<=i;z++){
+						        ficha_mesh(lat,i*4*t-100, Math.atan2(lat,i*4*t),tam_crear);
+						        lat -= (3*t)+0.5;
+						        j++;
+					    	}
+					    	i++;
+						}
+						break;
+					case 3:
+						//CURVA
+						var curve = new THREE.CubicBezierCurve(
+							new THREE.Vector3( -0.25*n, 0, 0 ),
+							new THREE.Vector3( -0.125*n, 0.375*n, 0 ),
+							new THREE.Vector3( 0.5*n, 0.375*n, 0 ),
+							new THREE.Vector3( 0.25*n, 0, 0 )
+						);
+			        	var points = curve.getPoints(n*8);      
+						for(var i=6*n;i>2*n;i-=8){
+								ficha_mesh(points[i+1].x*4*t-(t*45),points[i+1].y*4*t-(t*65), -Math.atan2(points[i].y,points[i].x),tam_crear);
+						}
+						points = null;
+						break;
+					case 4:
+						var angfact = 2/n;
+			        	var angulo = 0; 
+			        	var radio = n*0.15;  
+			        	var fact = 5;  
+						for(var i=0;i<n;i++){
+							var x = Math.cos(angulo*Math.PI)*radio;
+							var y = Math.sin(angulo*Math.PI)*radio;
+							ficha_mesh(x*fact*t,y*fact*t, -angulo*Math.PI,tam_crear);
+							angulo+=angfact;
+						}
+						break;
+					default:						
+						break;
+				}
+			}
+
+			/*
+			*
+			0: cuando entra a modo ejecutar, crea piezas con físicas para las de sin físicas creadas, ocultando estas últimas.
+			*
+			1: cuando entra a modo editor, elimina las piezas con físicas y vuelve a colocar las sin físicas
+			*/
+			var cambiarFichas = function(m){
+				if(m==0){
+					if(continuar==0){
+						scene.remove(fichas_sinf);
+						for(var i=0; i<fichas_sinf.children.length;i++)
+							ficha_physi(fichas_sinf.children[i]);
+					}else{
+						scene.remove(fichas_temp);
+						for(var i=0; i<fichas_temp.children.length;i++)
+							ficha_physi(fichas_temp.children[i]);
+						fichas_temp = new THREE.Object3D();
+					}
+				}else{
+					if(continuar==0){
+						scene.remove(fichas);
+						scene.add(fichas_sinf);
+						for(var i=0; i<fichas.length;i++)
+							scene.remove(fichas[i])
+						fichas = Array();
+					}else{
+						scene.add(fichas_temp);
+					}				
+				}
+			}
+
+			/*
+				Función para crear una ficha en la posición  px,py con rotación r
+				El valor i por ahora sólo se usa para el color de la primera pieza
+			*/
+			//añade piezas con físicas
+			var ficha_physi = function(ficha_mesh){
+				var tam = ficha_mesh.tam_ficha;
+				var ficha = new Physijs.BoxMesh(
+				    new THREE.BoxGeometry(.3*tam, .6*tam, tam/10), ficha_mesh.material.clone(),
+					10, // mass, cuanto menor sea, mayor fuerza recibe. Si es 0, no se mueve con impulso
+					{ restitution: .2, friction: .8 }
+				);
+				ficha.castShadow = true;				
+				ficha.rotacion = ficha_mesh.rotation.y;
+			    ficha.rotation.y = ficha_mesh.rotation.y;
+				ficha.position.x = ficha_mesh.position.x  ;
+				ficha.position.y = .3*tam; //la mitad de la altura
+				ficha.position.z = ficha_mesh.position.z;
+				ficha.tam_ficha = tam;
+				fichas.push(ficha);
+				scene.add(ficha);
+			}
+			//añade piezas sin físicas
+			var ficha_mesh = function(px,py,r,tam=20){
+				var materials = Array();
+				var imagen = Math.round((Math.random()*100)%23);
+				var col;
+				if(color<0)
+					col = '#'+Math.floor(Math.random()*16777215).toString(16); //http://stackoverflow.com/questions/1484506/random-color-generator-in-javascript
+				else 
+					col = color;
+				for ( var i = 0; i < 10; i ++ ) {
+					if(i==4)
+						materials.push( new THREE.MeshLambertMaterial( { map: texturas[imagen], overdraw: true } ) );
+					else
+						materials.push( new THREE.MeshLambertMaterial( { color: col, overdraw: true } ) );
+				}
+				var ficha = new THREE.Mesh(
+				    new THREE.BoxGeometry(.3*tam, .6*tam, tam/10), new THREE.MeshFaceMaterial(materials)
+				    //new THREE.MeshLambertMaterial({ color: 0xff0000 })//,
+					//10, // mass, cuanto menor sea, mayor fuerza recibe. Si es 0, no se mueve con impulso
+					//{ restitution: .2, friction: .8 }
+				);
+				ficha.colorficha = col;
+				ficha.imagen = imagen;
+				ficha.castShadow = true;			    
+			    ficha.rotation.y = r;
+				ficha.rotacion = r;
+				ficha.tam_ficha = tam;
+
+				ficha.position.x = px ;
+				ficha.position.y = .3*tam;
+				ficha.position.z = py;
+				fichas_sinf.add(ficha);
+				if(continuar==1)
+					fichas_temp.add(ficha);
+				return ficha;
+			}
+			
+			var editarFicha = function(f){
+				noEditar(); //Por si acaso.
+				ficha_editar = f;							
+				var tam = ficha_editar.tam_ficha;
+				if(glow_editar.tam_ficha!=tam){
+					var scale = tam/glow_editar.tam_ficha;
+					glow_editar.geometry.scale(scale,scale,scale);
+					glow_editar.tam_ficha = tam;
+				}
+				glow_editar.position.x = ficha_editar.position.x;
+				glow_editar.position.y = ficha_editar.position.y;
+				glow_editar.position.z = ficha_editar.position.z;
+				glow_editar.rotation.y = ficha_editar.rotation.y;
+				addEditorGui();
+				scene.add( glow_editar );
+			}
+			
+			var noEditar = function(){
+				ficha_editar = null;
+				try{
+					ficha_gui.destroy();
+					ficha_gui = null;
+				}catch(e){}			
+				try{
+					scene.remove(glow_editar);
+				}catch(e){}
+			}
+
+			/**  MENÚS **/
+			var addControlGui = function() {
+				var controles = new function () {
+		            this.modo = (estado==1)?"Editor":"Ejecución";
+					this._submenu;
+		            this.modoClick = (click==1)?"Colocar":"Seleccionar";
+		            this._modoClick;
+		            this.instrucciones = function(){abrirInstrucciones();};
+					this.camspeed = controles_camara.movementSpeed;				
+		            this.cambiarClick = function(){
+		            	click = (click+1)%2;
+		            	if(click==1){
+		            		this.modoClick = "Colocar";
+							this._tam = this._submenu.add(this,"tam",10,60).name("Tamaño");
+							this._tam.onFinishChange(function(t){tam_crear = t;});
+							this._rotacion = this._submenu.add(this,"rotacion",0,360).name("Rotación");
+							this._rotacion.onFinishChange(function(f){rotacion = THREE.Math.degToRad(f);});
+							this._randomColor = this._submenu.add(this, 'randomColor').name("Color aleatorio");
+							color = 0xff0000;
+							this._color = this._submenu.addColor(this, 'color').name("Color");
+							this._color.onChange(function(c){color = c;});
+		            	}else{
+		            		this.modoClick = "Seleccionar";
+			            	this._submenu.remove(this._tam);	
+			            	this._submenu.remove(this._rotacion);	
+			            	this._submenu.remove(this._randomColor);	
+			            	this._submenu.remove(this._color);	
+		            	}
+						noEditar();
+		            };
+		            this._cambiarClick;
+
+		            this.continuar = (continuar==1)?"Continuar":"Reiniciar";
+		            this._continuar;
+		            this.cambiarContinuar = function(){
+		            	continuar = (continuar+1)%2;
+		            	this.continuar = (continuar==1)?"Continuar":"Reiniciar";
+						var name = (continuar==1)?"Reiniciar":"Continuar"
+						this._cambiarContinuar.name(name);
+		            };
+		            this._cambiarContinuar;
+
+		            this.fuerza = fuerza;
+		            this._fuerza;
+
+		            this.rotacion = rotacion;
+		            this._rotacion;
+
+		            this.tam = tam_crear;
+		            this._tam;
+
+		            this.color = (color==-1)?0xff0000:color;
+		            this._color;
+		            this._vacio = function(){};
+		            
+		            this.randomColor = function(){ 
+		            	if(color == -1){
+		            		this._randomColor.name("Color aleatorio");
+		            		color = 0xff0000;
+		            		this._submenu.remove(this._color);
+							this._color = this._submenu.addColor(this, 'color').name("Color");
+							this._color.onChange(function(c){color = c;});
+		            	}else{
+		            		this._randomColor.name("Seleccionar color");
+		            		color = -1;
+		            		this._submenu.remove(this._color);
+							this._color = this._submenu.add(this, '_vacio').name("Color aleatorio");
+		            	}
+		            };
+		            this._randomColor;
+
+					this._cambiarEstado;
+		            this.cambiarEstado = function(){
+		            	estado = (estado+1)%2;
+		            	if(estado==1){
+			            	this.modo = "Editor";
+			            	this._modoClick = this._submenu.add(this,"modoClick").name("Modo actual:").listen();
+			            	this._cambiarClick = this._submenu.add(this,"cambiarClick").name("Cambiar modo");			            	
+							try{
+			            		this._submenu.remove(this._fuerza);	
+			            	}catch(e){}		            	
+							try{
+			            		this._submenu.remove(this._continuar);	 
+			            	}catch(e){}		 	    	
+							try{
+			            		this._submenu.remove(this._cambiarContinuar);
+			            	}catch(e){}
+							noEditar();
+			            	cambiarFichas(1);
+		            	}else{
+			            	this.modo = "Ejecución";
+			            	this._continuar = this._submenu.add(this,"continuar").name("Al ir al editor: ").listen();
+							var name = (continuar==1)?"Reiniciar":"Continuar"
+			            	this._cambiarContinuar = this._submenu.add(this,"cambiarContinuar").name(name);
+							this._fuerza = this._submenu.add(this,"fuerza",1,15).name("Fuerza");
+							this._fuerza.onChange(function(f){fuerza = (f>0 && f<16)?f:fuerza;});
+							try{
+			            		this._submenu.remove(this._modoClick);		
+			            		this._submenu.remove(this._cambiarClick);
+			            		this._submenu.remove(this._tam);		
+			            		this._submenu.remove(this._rotacion);	
+			            		this._submenu.remove(this._color);	
+			            		this._submenu.remove(this._randomColor);	
+			            	}catch(e){}							
+							noEditar();
+			            	cambiarFichas(0);	 
+		            	}							
+						var name = (estado==1)?"Ejecutar":"Editar";
+						this._cambiarEstado.name(name);
+				        if(click==1&&estado==1){
+							this._tam = this._submenu.add(this,"tam",10,60).name("Tamaño");
+							this._tam.onFinishChange(function(t){tam_crear = t;});
+							this._rotacion = this._submenu.add(this,"rotacion",0,360).name("Rotación");
+							this._rotacion.onFinishChange(function(f){rotacion = THREE.Math.degToRad(f);});
+							this._randomColor = this._submenu.add(this, 'randomColor').name("Color aleatorio");
+							color = 0xff0000;
+							this._color = this._submenu.addColor(this, 'color').name("Color");
+							this._color.onFinishChange(function(f){color = f;});
+				        }
+		            };
+		        };
+				gui = new dat.GUI();
+		        gui.add(controles, 'modo').name("").listen();
+				var name = (estado==1)?"Ejecutar":"Editar";
+		        controles._cambiarEstado = gui.add(controles, 'cambiarEstado').name(name);
+		        gui.add(controles, 'instrucciones').name("Controles");
+		        gui.add(controles, 'camspeed',50,500).name("Velocidad Camara").onChange(function(s){controles_camara.movementSpeed = s;});
+				
+				controles._submenu = gui.addFolder("Opciones");
+				controles._submenu.open();
+			   	controles._modoClick = controles._submenu.add(controles,"modoClick").name("Modo actual:").listen();
+			    controles._cambiarClick = controles._submenu.add(controles,"cambiarClick").name("Cambiar modo");
+		        
+		       	//Para evitar que se coloquen fichas al clicar en el GUI			
+                gui.domElement.addEventListener("click", function(){
+				    guiclick = 1;
+			    });
+
+				gui.domElement.addEventListener("mousemove", function(){
+				    guimove = 1;
+			    });
+
+				addTestGui(gui.addFolder("MENU PRUEBAS"));
+		    }
+
+		    var addEditorGui = function() {
+				ficha_gui = new dat.GUI();
+				ficha_gui.datos = new function() { 
+					this._update = function(){
+						 this.rotacion = THREE.Math.radToDeg((ficha_editar.rotation.y>=0)?ficha_editar.rotation.y:((2*Math.PI)+ficha_editar.rotation.y));  
+						 this.posicionX = ficha_editar.position.x; 
+						 this.posicionZ = ficha_editar.position.z;
+						 this.tam = ficha_editar.tam_ficha;
+						 this.color = ficha_editar.colorficha; 
+					};
+				  this._rotar = function(rot){
+				  	glow_editar.visible = true;
+				  	ficha_editar.rotation.y = THREE.Math.degToRad(rot);
+				  	glow_editar.rotation.y = THREE.Math.degToRad(rot);
+				  	ficha_editar.rotacion = THREE.Math.degToRad(rot);
+				  };
+				  this._moverX = function(mov){
+				  	glow_editar.visible = true;
+				  	ficha_editar.position.x = mov;
+				  	glow_editar.position.x = mov;
+				  	//ficha_editar.coordX = mov;
+				  };
+				  this._moverZ = function(mov){
+				  	glow_editar.visible = true;
+				  	ficha_editar.position.z = mov;
+				  	glow_editar.position.z = mov;
+				  	//ficha_editar.coordY = mov;
+				  };
+				  this._cambiarTam = function(tam){
+				  	glow_editar.visible = true;
+				  	glow_editar.position.y = tam*.3;
+				  	ficha_editar.position.y = tam*.3;
+				  	var viejo = ficha_editar.tam_ficha;
+				  	ficha_editar.tam_ficha = tam;
+				  	glow_editar.tam_ficha = tam;
+				  	tam/=viejo;
+				  	ficha_editar.geometry.scale(tam,tam,tam);
+				  	glow_editar.geometry.scale(tam,tam,tam);
+				  };
+				  this._cambiarColor = function(color){
+				  //Eliminado
+				  	glow_editar.visible = false;
+					for(var i=0;i<ficha_editar.material.materials.length;i++){
+						if(ficha_editar.material.materials[i].map===null)
+							ficha_editar.material.materials[i].color.setHex(color)
+					}
+					ficha_editar.colorficha = color;
+				  	ge_oculto = 1;
+				  };
+				  this.moverClick = function(){
+						click+=2;
+				  };
+				  this.destroy = function(){
+						scene.remove(ficha_editar);
+						fichas_sinf.remove(ficha_editar);
+						noEditar();
+				  };
+				};
+				var datos = ficha_gui.datos;
+				datos._update();
+				var width = plane.geometry.parameters.width, height = plane.geometry.parameters.height;
+
+				//En grados. El slider tiene la funcion step mal implementada con decimales
+				ficha_gui.add(datos, 'rotacion', 0, 360).name("Rotación").listen().onChange(datos._rotar); 
+				ficha_gui.add(datos, 'moverClick').name("Mover a clic");
+				ficha_gui.add(datos, 'posicionX', (1-(width/2)), ((width/2)-1)).name("Cambiar X").listen().onChange(datos._moverX);
+				ficha_gui.add(datos, 'posicionZ', (1-(height/2)), ((height/2)-1)).name("Cambiar Z").listen().onChange(datos._moverZ);
+				ficha_gui.add(datos, 'tam',10,60).name("Tamaño").listen().onFinishChange(datos._cambiarTam);
+				ficha_gui.add(datos, 'destroy').name("Eliminar pieza");
+				/*ficha_gui.addColor(datos, 'color').name("Color").onChange(datos._cambiarColor);*/ /*ELIMINADO: vuelve el color NEGRO cuando el color es "random"*/
+				
+				
+				ficha_editar.update = function(){datos.update;}
+
+				ficha_gui.domElement.addEventListener("click", function(){
+				    guiclick = 1;
+			    });
+				ficha_gui.domElement.addEventListener("mousemove", function(){
+				    guimove = 1;
+			    });
+		    }
+
+		    var addTestGui = function(testgui) {
+		    	testgui.open();
+				var datos = new function() { 
+				  this.distribucion = dist;  
+				  this.fichas = fcount; 
+				  this.tamfichas = tam_crear;
+				  this.vacio = function(){};
+				  this._newdist;
+				  this._newfcount;
+				  this._newtam;
+				  this.probar = function(){ //Reinicia gran parte de los componentes, para evitar posibles conflictos
+				  	dist = (isNaN(this._newdist))?dist:this._newdist;
+				  	fcount = (isNaN(this._newfcount))?fcount:this._newfcount;
+					for(var i=0; i<fichas.length;i++)
+						scene.remove(fichas[i]);
+					scene.remove(fichas_sinf);
+					scene.remove(fichas_temp);
+				  	fichas = Array();
+				  	fichas_sinf = new THREE.Object3D();
+				  	fichas_temp = new THREE.Object3D();
+				  	estado = 1;
+				  	click = 0;
+				  	color = -1;
+				  	continuar = 0;
+				  	noEditar();
+				  	crearFichas();
+				  	gui.destroy();
+				  	addControlGui();
+					scene.add(fichas_sinf);
+				  };
+				};
+				testgui.add(datos, 'distribucion', 0, 4).name("Distribución").step(1).onChange(function(val){datos._newdist=val;});
+				testgui.add(datos, 'fichas',1,100).name("Cantidad fichas").step(1).onChange(function(val){datos._newfcount=val;});
+				testgui.add(datos, 'tamfichas',10,60).name("Tamaño fichas").step(1).onChange(function(val){tam_crear=val;});
+				testgui.add(datos, 'probar').name("Generar fichas");
+
+		    }
+	     	
+			/** EVENTOS **/
+			
+			var handleMouseClick = function( evt ) {
+		    	switch(evt.button){
+		    	case 2: 
+		    		controles_camara.activeLook = false;
+		    		break;
+		    	default:
+					//Si se ha clicado en el gui, salir.
+					if(guiclick > 0) {guiclick=0; return;}
+					var ray, intersections, mouse_position = new THREE.Vector3;
+					_vector.set(
+						( evt.clientX / window.innerWidth ) * 2 - 1,
+						-( evt.clientY / window.innerHeight ) * 2 + 1,
+						1
+					);
+					_vector.unproject( camera );						
+					ray = new THREE.Raycaster( camera.position, _vector.sub( camera.position ).normalize() );
+
+					if(estado==0){ //Ejecución
+						intersections = ray.intersectObjects( fichas );
+						if ( intersections.length > 0 ) {
+							var ficha_elegida = intersections[0].object;
+							var f = Math.round((13-(ficha_elegida.tam_ficha/11))*(ficha_elegida.tam_ficha/9)*(1+(fuerza/10)));
+							var ang = ficha_elegida.rotacion; 
+							var z = f * Math.cos(ang);
+							var x = f * Math.sin(ang);
+							var force_vector = new THREE.Vector3(x,0,z);
+							ficha_elegida.applyCentralImpulse(force_vector);
+						}
+					}else if(click!=0){ //edición
+						intersections = ray.intersectObjects( [plane] );
+
+						if ( intersections.length > 0 ) {
+							if(click==1){ 
+								f = ficha_mesh(intersections[0].point.x,intersections[0].point.z,rotacion, tam_crear);
+								editarFicha(f);
+							}else{ //mover pieza por clic
+								ficha_editar.position.x = intersections[0].point.x;
+								ficha_editar.position.z = intersections[0].point.z;
+								glow_editar.position.x = intersections[0].point.x;
+								glow_editar.position.z = intersections[0].point.z;
+								click -= 2; 
+								ficha_gui.datos._update();
+							}
+						}
+					}else{
+						if(continuar==1){
+							intersections = ray.intersectObjects( fichas_temp.children, true  );	
+						}else{
+							intersections = ray.intersectObjects( fichas_sinf.children, true  );	
+						}
+						if ( intersections.length > 0 ) {
+							editarFicha(intersections[0].object);
+						}
+					}
+					break;
+				}
+			}
+			
+			var handleMouseMove = function( evt ) {
+
+
+					if(ge_oculto!=0){
+						ge_oculto = 1;
+				  		glow_editar.visible = true;
+					}
+
+
+					if(guimove!=0){
+						guimove = 0;
+						return;
+					}
+
+					var ray, intersections, mouse_position = new THREE.Vector3;
+					_vector.set(
+						( evt.clientX / window.innerWidth ) * 2 - 1,
+						-( evt.clientY / window.innerHeight ) * 2 + 1,
+						1
+					);
+
+					_vector.unproject( camera );
+						
+					ray = new THREE.Raycaster( camera.position, _vector.sub( camera.position ).normalize() );
+
+					if(estado==1&& click!=1){
+						if(continuar==1){
+							intersections = ray.intersectObjects( fichas_temp.children, true );	
+						}else{
+							intersections = ray.intersectObjects( fichas_sinf.children, true  );	
+						}
+						scene.remove(glow_onmove);					
+						if ( intersections.length > 0 ){
+							var tam = intersections[0].object.tam_ficha;
+							if(glow_onmove.tam_ficha!=tam){
+								var scale = tam/glow_onmove.tam_ficha;
+								glow_onmove.geometry.scale(scale,scale,scale);
+								glow_onmove.tam_ficha = tam;
+							}
+							glow_onmove.position.x = intersections[0].object.position.x;
+							glow_onmove.position.y = intersections[0].object.position.y;
+							glow_onmove.position.z = intersections[0].object.position.z;
+							glow_onmove.rotation.y = intersections[0].object.rotation.y;
+							scene.add( glow_onmove );
+						}
+					}
+			}
+
+		    var handleMouseDown = function(event){
+		    	if(event.button==2)
+		    		controles_camara.activeLook = true;
+		    };
+
+		    var handleKeyDown = function(event){
+		    	if(ficha_editar!==null){
+		    		var rot = 0.0174533 * 2; //1º = 0.0174533 radianes.
+			    	switch(event.keyCode){ //69==e 81==q 73==i 74==j 75==k 76==l
+			    		case 69: /* E */ 
+			    			ficha_editar.rotation.y+=rot; 
+			    			ficha_editar.rotacion+=rot;
+			    			glow_editar.rotation.y+=rot;
+			    			if(glow_onmove.position.x==ficha_editar.position.x&&glow_onmove.position.z==ficha_editar.position.z)
+			    				glow_onmove.rotation.y+=rot; //esto es que el ratón esta sobre la pieza en edición
+			    			ficha_gui.datos._update();
+			    			break;
+			    		case 81: /* Q */ 
+			    			ficha_editar.rotation.y-=rot;
+			    			ficha_editar.rotacion-=rot;
+			    			glow_editar.rotation.y-=rot;
+			    			if(glow_onmove.position.x==ficha_editar.position.x&&glow_onmove.position.z==ficha_editar.position.z)
+			    				glow_onmove.rotation.y-=rot;
+			    			ficha_gui.datos._update();
+			    			break;
+			    		case 73: /* I */
+			    			if(glow_onmove.position.x==ficha_editar.position.x&&glow_onmove.position.z==ficha_editar.position.z)
+			    				glow_onmove.position.x-=0.5;
+			    			ficha_editar.position.x-=0.5;
+			    			glow_editar.position.x-=0.5;
+			    			ficha_gui.datos._update();
+			    			break;
+			    		case 74: /* J */
+			    			if(glow_onmove.position.x==ficha_editar.position.x&&glow_onmove.position.z==ficha_editar.position.z)
+			    				glow_onmove.position.z+=0.5;
+			    			ficha_editar.position.z+=0.5;
+			    			glow_editar.position.z+=0.5;
+			    			ficha_gui.datos._update();
+			    			break;
+			    		case 75: /* K */
+			    			if(glow_onmove.position.x==ficha_editar.position.x&&glow_onmove.position.z==ficha_editar.position.z)
+			    				glow_onmove.position.x+=0.5;
+			    			ficha_editar.position.x+=0.5;
+			    			glow_editar.position.x+=0.5;
+			    			ficha_gui.datos._update();
+			    			break;
+			    		case 76: /* L */
+			    			if(glow_onmove.position.x==ficha_editar.position.x&&glow_onmove.position.z==ficha_editar.position.z)
+			    				glow_onmove.position.z-=0.5;
+			    			ficha_editar.position.z-=0.5;
+			    			glow_editar.position.z-=0.5;
+			    			ficha_gui.datos._update();
+			    			break;
+			    	}
+		    	}
+		    };
+
+	    	var handleResize = function() {
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize(window.innerWidth, window.innerHeight);
+				$('#controles').dialog("option", "maxHeight", 2*window.innerHeight/3);
+	    	}
+
+			window.addEventListener( 'mousedown', handleMouseDown );
+			window.addEventListener( 'click', handleMouseClick );
+			window.addEventListener( 'mousemove', handleMouseMove );
+			window.addEventListener( 'keydown', handleKeyDown );    
+    		window.addEventListener('resize', handleResize, false);
+
+    		$(document).ready(function(){
+
+				$('#controles').hide();   
+				var instrucciones = $('#controles').dialog({
+					draggable: true,
+					resizable: true,
+    				maxHeight: 2*window.innerHeight/3,
+					width: 'auto',
+					dialogClass:'dialog-title-style-class',
+					title: "Controles",
+					buttons: {
+						Close: {
+							click: function() {instrucciones.dialog('close');},
+							text: "Cerrar",
+							class: 'dialog_button_class'
+						}
+					}
+				});
+
+				instrucciones.dialog("close");
+				abrirInstrucciones = function(){
+					instrucciones.dialog('open');
+					$('#controles').parent().click(function(){guiclick=1}); //al igual que con dat.gui, para que no se haga nada al clicar en el dialog.
+				} 		
+    			init();
+    		});
+
+		</script>
+		
+		<!-- los siguientes dos scripts son para el glow-->
+		<script id="vertexShader" type="x-shader/x-vertex">
+			uniform vec3 viewVector;
+			uniform float c;
+			uniform float p;
+			varying float intensity;
+			void main() 
+			{
+				vec3 vNormal = normalize( normalMatrix * normal );
+				vec3 vNormel = normalize( normalMatrix * viewVector );
+				intensity = pow( c - dot(vNormal, vNormel), p );
+				
+				gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+			}
+		</script>
+		<script id="fragmentShader" type="x-shader/x-vertex">
+			uniform vec3 glowColor;
+			varying float intensity;
+			void main() 
+			{
+				vec3 glow = glowColor * intensity;
+				gl_FragColor = vec4( glow, 1.0 );
+			}
+		</script>
+		
+		<section id="controles" class="" hidden="hidden">
+			<h2>Distribuciones:</h2>
+			<strong>0:</strong> Vacio.<br/>		
+			<strong>1:</strong> Triangulo.<br/>
+			<strong>2:</strong> Curva. Crea menos piezas por limitaciones.<br/>
+			<strong>3:</strong> Triangulo con rotaciones.<br/>
+			<strong>4:</strong> Circunferencia.<br/>
+			<h2>Mover la camara:</h2>
+			<strong>W:</strong> camara hacia adelante.<br/>
+			<strong>S:</strong> camara hacia atras.<br/>
+			<strong>A:</strong> camara hacia la derecha.<br/>
+			<strong>D:</strong> camara hacia la izquierda.<br/>
+			<strong>R</strong> o <strong>rueda ratón hacia arriba:</strong> subir camara.<br/>
+			<strong>F</strong> o <strong>rueda ratón hacia abajo:</strong> bajar camara.<br/>
+			<strong>Clic derecho de ratón:</strong> girar cámara en primera persona con el ratón.<br/>
+			<h2>Editar ficha seleccionada:</h2>
+			<h3>Mover ficha en eje X:</h3>
+			<strong>I:</strong> hacia el lado negativo.<br/>
+			<strong>K:</strong> hacia el lado positivo.<br/>
+			<h3>Mover ficha en eje Z:</h3>
+			<strong>J:</strong> hacia el lado positivo.<br/>
+			<strong>L:</strong> hacia el lado negativo.<br/>
+			<h3>Rotar ficha en eje Y:</h3>
+			<strong>Q:</strong> sentido agujas del reloj.<br/>
+			<strong>E:</strong> sentido contrario agujas del reloj.<br/>
+		</section>
+	</body>
+</html>
